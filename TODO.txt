@@ -1,3 +1,4 @@
 - Magic udev hackery to make Xorg and wine etc actually see those fake evdev devices
 - Use a map for fakedev.c's FDs and not a comically large array
 - Use a linked list for clients and not a comically large array
+- Fix to make it exit cleanly, some threads get stuck...

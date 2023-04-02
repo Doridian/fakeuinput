@@ -14,7 +14,6 @@ struct libevdev {
 };
 
 struct libevdev_uinput {
-    int active;
     int sockfd;
 
     int local_clientfd;
@@ -28,7 +27,6 @@ struct libevdev_uinput {
 };
 
 struct libevdev_client {
-    int active;
     int sockfd;
 
     int index;
@@ -62,8 +60,6 @@ static void client_close(struct libevdev_client* client) {
         return;
     }
 
-    client->active = 0;
-
     const int sockfd = client->sockfd;
     if (sockfd) {
         client->sockfd = 0;
@@ -81,17 +77,19 @@ static int cleanup_client_if_gone(struct libevdev_uinput* evdev, int index) {
         return 1;
     }
 
-    if (client->ptid_poll) {
-        pthread_join(client->ptid_poll, NULL);
+    const pthread_t ptid_poll = client->ptid_poll;
+    if (ptid_poll) {
+        client->ptid_poll = 0;
+        pthread_join(ptid_poll, NULL);
     }
+
     evdev->clients[index] = NULL;
     free(client);
+
     return 0;
 }
 
 static void shutdown_devhandler(struct libevdev_uinput* evdev) {
-    evdev->active = 0;
-
     const int sockfd = evdev->sockfd;
     if (sockfd) {
         evdev->sockfd = 0;
@@ -132,12 +130,16 @@ void* devhandler_client(void* arg) {
     struct libevdev_client* client = (struct libevdev_client*)arg;
     struct input_event ie;
 
-    while (client->active) {
-        if (read(client->sockfd, &ie, sizeof(struct input_event)) != sizeof(struct input_event)) {
+    while (1) {
+        const int sockfd = client->sockfd;
+        if (sockfd == 0) {
+            break;
+        }
+        if (read(sockfd, &ie, sizeof(struct input_event)) != sizeof(struct input_event)) {
             if (errno == EAGAIN) {
                 continue;
             }
-            errlogf("read(client %d) failed: %s", client->sockfd, strerror(errno));
+            errlogf("read(client %d) failed: %s", sockfd, strerror(errno));
             client_close(client);
             break;
         }
@@ -155,9 +157,13 @@ void* devhandler_accept(void* arg) {
     struct sockaddr_un client_addr;
     unsigned int client_addr_len;
 
-    while (evdev->active) {
+    while (1) {
+        const int sockfd = evdev->sockfd;
+        if (sockfd == 0) {
+            break;
+        }
         client_addr_len = sizeof(client_addr);
-        int clientfd = accept(evdev->sockfd, (struct sockaddr*)&client_addr, &client_addr_len);
+        int clientfd = accept(sockfd, (struct sockaddr*)&client_addr, &client_addr_len);
         if (clientfd < 0) {
             if (errno == EAGAIN) {
                 continue;
@@ -185,7 +191,6 @@ void* devhandler_accept(void* arg) {
             }
 
             struct libevdev_client* client = malloc(sizeof(struct libevdev_client));
-            client->active = 1;
             client->sockfd = clientfd;
             client->index = i;
             client->evdev = evdev;
@@ -318,7 +323,6 @@ int libevdev_uinput_create_from_device(const struct libevdev* dev, int uinput_fd
     errlogf("libevdev_uinput_create_from_device(): using %s", uinput_dev_tmp->devnode);
 
     memcpy(&uinput_dev_tmp->fakedev, &dev->fakedev, sizeof(struct fakedev_t));
-    uinput_dev_tmp->active = 1;
 
     if (init_devhandler(uinput_dev_tmp) < 0) {
         free(uinput_dev_tmp);
