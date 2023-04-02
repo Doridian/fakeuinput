@@ -8,6 +8,21 @@
 #include <linux/input.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <sys/xattr.h>
+
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#define FAKEDEV_PATH "/tmp/fakedev/"
+#define FAKEDEV_XATTR_NAME "user.fakeuinput.fakedev"
+
+#define likely(x)       __builtin_expect((x),1)
+#define unlikely(x)     __builtin_expect((x),0)
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -24,8 +39,6 @@
 #define set_bit(bit, array)	    ((array[LONG(bit)] |= BIT(bit)))
 #define clear_bit(bit, array)	((array[LONG(bit)] &= ~BIT(bit)))
 
-struct udev_device;
-
 struct fakedev_t {
     bool initialized;
     struct input_id id;
@@ -41,5 +54,6 @@ struct fakedev_t {
     unsigned long sndbit[BITS_TO_LONGS(SND_CNT)];
     unsigned long ffbit[BITS_TO_LONGS(FF_CNT)];
     unsigned long swbit[BITS_TO_LONGS(SW_CNT)];
-};
 
+    struct input_absinfo absinfo[ABS_CNT];
+};

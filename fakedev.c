@@ -1,43 +1,92 @@
-#include "types.h"
+#include "base.h"
 
 #include <dlfcn.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-
-#define FAKEDEV_PATH "/dev/fakedev"
-
-
-struct fakedev_t FAKEDEV = {
-    .initialized = false,
-    .id = {
-        .bustype = BUS_VIRTUAL,
-        .vendor = 0x43,
-        .product = 0x69,
-        .version = 0x1,
-    },
-    .name = "fakedev",
-};
-
-const char* udev_device_get_devnode(struct udev_device* dev) {
-    return FAKEDEV_PATH;
-}
 
 int (*real_ioctl)(int fd, unsigned long request, void *payload);
+int (*real_open)(const char* path, int flags);
+int (*real_close)(int fd);
 
-int (*real_open)(const char*, int flags);
+/*
+struct udev_device;
+const char* (*real_udev_device_get_devnode)(struct udev_device* dev);
+const char* udev_device_get_devnode(struct udev_device* dev) {
+    if (real_udev_device_get_devnode == NULL) {
+        real_udev_device_get_devnode = dlsym(RTLD_NEXT, "udev_device_get_devnode");
+    }
+
+    if (strchr(dev->syspath, '/') == NULL) {
+        return real_udev_device_get_devnode(dev);
+    }
+
+    return FAKEDEV_PATH;
+}
+*/
+
+#define FAKEDEV_MAX 65535
+
+struct fakedev_t* FAKE_DEVICES[FAKEDEV_MAX+1];
 
 int open(const char* path, int flags) {
-    if (real_open == NULL) {
+    if (unlikely(real_open == NULL)) {
         real_open = dlsym(RTLD_NEXT, "open");
     }
 
-    if (strcmp(path, FAKEDEV_PATH) != 0) {
+    if (likely(strstr(path, FAKEDEV_PATH) == NULL)) {
         return real_open(path, flags);
     }
 
-    return 666;
+    struct sockaddr_un un;
+    const int fd = socket(AF_LOCAL, SOCK_STREAM, 0);
+    if (fd < 0) {
+        printf("fakedev: socket(%s) failed: %s\n", path, strerror(errno));
+        return -EINVAL;
+    }
+
+    if (unlikely(fd < 0 || fd > FAKEDEV_MAX)) {
+        close(fd);
+        return -EINVAL;
+    }
+
+    un.sun_family = AF_LOCAL;
+    strncpy(un.sun_path, path, sizeof(un.sun_path));
+
+    if (connect(fd, (struct sockaddr *)&un, sizeof(un)) < 0) {
+        printf("fakedev: connect(%d, %s) failed: %s\n", fd, path, strerror(errno));
+        close(fd);
+        return -EINVAL;
+    }
+
+
+    struct fakedev_t* dev = malloc(sizeof(struct fakedev_t));
+    ssize_t len = read(fd, dev, sizeof(struct fakedev_t));
+    if (unlikely(len != sizeof(struct fakedev_t))) {
+        printf("fakedev: read(%d, %s) failed to read fakedev_t: %s\n", fd, path, strerror(errno));
+        close(fd);
+        free(dev);
+        return -ENOENT;
+    }
+    FAKE_DEVICES[fd] = dev;
+
+    return fd;
+}
+
+int close(const int fd) {
+    if (unlikely(real_close == NULL)) {
+        real_close = dlsym(RTLD_NEXT, "close");
+    }
+
+    if (unlikely(fd < 0 || fd > FAKEDEV_MAX)) {
+        return real_close(fd);
+    }
+
+    struct fakedev_t* dev = FAKE_DEVICES[fd];
+    if (likely(dev == NULL)) {
+        return real_close(fd);
+    }
+    FAKE_DEVICES[fd] = NULL;
+    free(dev);
+
+    return real_close(fd);
 }
 
 #define IOCTL_UNIMPL(REQUEST) \
@@ -53,18 +102,16 @@ int open(const char* path, int flags) {
 #define EVIOC_MASK_SIZE(nr)	((nr) & ~(_IOC_SIZEMASK << _IOC_SIZESHIFT))
 
 int ioctl(const int fd, const unsigned long request, void *payload) {
-    if (real_ioctl == NULL) {
+    if (unlikely(real_ioctl == NULL)) {
         real_ioctl = dlsym(RTLD_NEXT, "ioctl");
     }
 
-    if (!FAKEDEV.initialized) {
-        set_bit(EV_SYN, FAKEDEV.evbit);
-        set_bit(EV_ABS, FAKEDEV.evbit);
-        set_bit(EV_KEY, FAKEDEV.evbit);
-        FAKEDEV.initialized = true;
+    if (unlikely(fd < 0 || fd > FAKEDEV_MAX)) {
+        return real_ioctl(fd, request, payload);
     }
-
-    if (fd != 666) {
+    
+    struct fakedev_t *dev = FAKE_DEVICES[fd];
+    if (likely(dev == NULL)) {
         return real_ioctl(fd, request, payload);
     }
 
@@ -74,13 +121,20 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
             return 0;
 
         case EVIOCGID:
-            memcpy(payload, &FAKEDEV.id, sizeof(FAKEDEV.id));
+            memcpy(payload, &dev->id, sizeof(dev->id));
+            return 0;
+
+        case EVIOCGRAB:
+            if (payload) {
+                printf("grabbing %d\n", fd);
+            } else {
+                printf("releasing %d\n", fd);
+            }
             return 0;
 
         IOCTL_UNIMPL(EVIOCGREP)
 	    IOCTL_UNIMPL(EVIOCRMFF)
 	    IOCTL_UNIMPL(EVIOCGEFFECTS)
-    	IOCTL_UNIMPL(EVIOCGRAB)
         IOCTL_UNIMPL(EVIOCREVOKE)
         IOCTL_UNIMPL(EVIOCGMASK)
         IOCTL_UNIMPL(EVIOCSMASK)
@@ -95,11 +149,11 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
 
     switch (EVIOC_MASK_SIZE(request)) {
         case EVIOCGNAME(0):
-            strncpy(payload, FAKEDEV.name, size);
+            strncpy(payload, dev->name, size);
             break;
 
         case EVIOCGPROP(0):
-            memcpy(payload, FAKEDEV.propbit, MIN(BITS_TO_LONGS(INPUT_PROP_CNT), size));
+            memcpy(payload, dev->propbit, MIN(BITS_TO_LONGS(INPUT_PROP_CNT), size));
             break;
 
         IOCTL_0_UNIMPL(EVIOCGMTSLOTS)
@@ -125,15 +179,15 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
             unsigned long *bits;
             int len;
             switch (type) {
-                case      0: bits = FAKEDEV.evbit;  len = EV_MAX;  break;
-                case EV_KEY: bits = FAKEDEV.keybit; len = KEY_MAX; break;
-                case EV_REL: bits = FAKEDEV.relbit; len = REL_MAX; break;
-                case EV_ABS: bits = FAKEDEV.absbit; len = ABS_MAX; break;
-                case EV_MSC: bits = FAKEDEV.mscbit; len = MSC_MAX; break;
-                case EV_LED: bits = FAKEDEV.ledbit; len = LED_MAX; break;
-                case EV_SND: bits = FAKEDEV.sndbit; len = SND_MAX; break;
-                case EV_FF:  bits = FAKEDEV.ffbit;  len = FF_MAX;  break;
-                case EV_SW:  bits = FAKEDEV.swbit;  len = SW_MAX;  break;
+                case      0: bits = dev->evbit;  len = EV_MAX;  break;
+                case EV_KEY: bits = dev->keybit; len = KEY_MAX; break;
+                case EV_REL: bits = dev->relbit; len = REL_MAX; break;
+                case EV_ABS: bits = dev->absbit; len = ABS_MAX; break;
+                case EV_MSC: bits = dev->mscbit; len = MSC_MAX; break;
+                case EV_LED: bits = dev->ledbit; len = LED_MAX; break;
+                case EV_SND: bits = dev->sndbit; len = SND_MAX; break;
+                case EV_FF:  bits = dev->ffbit;  len = FF_MAX;  break;
+                case EV_SW:  bits = dev->swbit;  len = SW_MAX;  break;
                 default: return -EINVAL;
             }
 
@@ -143,7 +197,11 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
 
 		if ((_IOC_NR(request) & ~ABS_MAX) == _IOC_NR(EVIOCGABS(0))) {
             const int type = _IOC_NR(request) & ABS_MAX;
-            printf("ioctl(%d, IOC_READ(%d)->EVIOCGABS(%d), %p) unhandled\n", fd, size, type, payload);
+            if (!dev->absinfo) {
+                return -EINVAL;
+            }
+            memcpy(payload, &dev->absinfo[type], MIN(sizeof(struct input_absinfo), size));
+            return 0;
         }
         
         return -EINVAL;
