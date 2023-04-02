@@ -10,6 +10,9 @@ gcc -g -Wall -Werror -fPIC -shared -I/usr/include/libevdev-1.0 -o /tmp/fakedevmg
 #/tmp/fakedevmgr /tmp/fakedev/js1 &
 #sleep 1
 
-/usr/bin/sunshine
+rm -f /tmp/sunshine
+cp /usr/bin/sunshine /tmp/sunshine
+
+LD_PRELOAD=/tmp/fakedevmgr.so /tmp/sunshine
 
 #LD_PRELOAD=/tmp/fakedev.so evtest /tmp/fakedev/js1
