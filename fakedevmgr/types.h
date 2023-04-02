@@ -2,15 +2,19 @@
 
 #include "../shared/types.h"
 
-#define MAX_CLIENT_FDS 256
-
 #include <pthread.h>
 
-struct libevdev {
+struct libevdev { // Config
     struct fakedev_t fakedev;
 };
 
-struct libevdev_uinput {
+struct fakedevmgr_client_list_item {
+    struct libevdev_client* client;
+    struct fakedevmgr_client_list_item* next;
+    struct fakedevmgr_client_list_item* prev;
+};
+
+struct libevdev_uinput { // Server
     int sockfd;
 
     int local_clientfd;
@@ -18,15 +22,14 @@ struct libevdev_uinput {
     pthread_t ptid_accept;
     char devnode[256];
 
-    struct libevdev_client* clients[MAX_CLIENT_FDS];
+    struct fakedevmgr_client_list_item* first_client_item;
 
     struct fakedev_t fakedev;
 };
 
-struct libevdev_client {
+struct libevdev_client { // Client
     int sockfd;
 
-    int index;
     pthread_t ptid_poll;
     struct libevdev_uinput* evdev;
 };

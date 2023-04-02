@@ -18,8 +18,16 @@ void fakedevmgr_client_close(struct libevdev_client* client) {
     }
 }
 
-int fakedevmgr_cleanup_client_if_gone(struct libevdev_uinput* evdev, int index) {
-    struct libevdev_client* client = evdev->clients[index];
+void fakedevmgr_client_close_wait(struct libevdev_client* client) {
+    fakedevmgr_client_close(client);
+    const pthread_t ptid_poll = client->ptid_poll;
+    if (ptid_poll) {
+        pthread_join(ptid_poll, NULL);
+        client->ptid_poll = 0;
+    }
+}
+
+int fakedevmgr_cleanup_client_if_gone(struct libevdev_client* client) {
     if (!client) {
         return 0;
     }
@@ -28,15 +36,7 @@ int fakedevmgr_cleanup_client_if_gone(struct libevdev_uinput* evdev, int index) 
         return 1;
     }
 
-    const pthread_t ptid_poll = client->ptid_poll;
-    if (ptid_poll) {
-        pthread_join(ptid_poll, NULL);
-        client->ptid_poll = 0;
-    }
-
-    evdev->clients[index] = NULL;
-    free(client);
-
+    fakedevmgr_client_close_wait(client);
     return 0;
 }
 
