@@ -40,9 +40,9 @@
 #define clear_bit(bit, array)	((array[LONG(bit)] &= ~BIT(bit)))
 
 struct fakedev_t {
-    bool initialized;
     struct input_id id;
     char name[64];
+    char uniq[64];
 
     unsigned long propbit[BITS_TO_LONGS(INPUT_PROP_CNT)];
     unsigned long evbit[BITS_TO_LONGS(EV_CNT)];

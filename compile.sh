@@ -1,14 +1,15 @@
 #!/bin/sh
 set -ex
 
-pkill -9 -fe fakedevmgr || true
-
+rm -rf /tmp/fakedev
 mkdir -p /tmp/fakedev
 
-gcc -Wall -Werror -fPIC -ldl -shared -o /tmp/fakedev.so fakedev.c
-gcc -Wall -Werror -o /tmp/fakedevmgr fakedevmgr.c
+gcc -g -Wall -Werror -fPIC -ldl -shared -o /tmp/fakedev.so fakedev.c
+gcc -g -Wall -Werror -fPIC -shared -I/usr/include/libevdev-1.0 -o /tmp/fakedevmgr.so fakedevmgr.c
 
-/tmp/fakedevmgr /tmp/fakedev/js1 &
-sleep 1
+#/tmp/fakedevmgr /tmp/fakedev/js1 &
+#sleep 1
 
-LD_PRELOAD=/tmp/fakedev.so strace evtest /tmp/fakedev/js1
+/usr/bin/sunshine
+
+#LD_PRELOAD=/tmp/fakedev.so evtest /tmp/fakedev/js1

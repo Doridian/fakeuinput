@@ -22,9 +22,38 @@ const char* udev_device_get_devnode(struct udev_device* dev) {
 }
 */
 
+// TODO: Map or something
 #define FAKEDEV_MAX 65535
 
+#define errlog(str, ...) fprintf(stderr, "fakedev: " str "\n")
+#define errlogf(str, ...) fprintf(stderr, "fakedev: " str "\n", __VA_ARGS__)
+
 struct fakedev_t* FAKE_DEVICES[FAKEDEV_MAX+1];
+
+static struct fakedev_t* get_fake_device(int fd) {
+    if (unlikely(fd < 0 || fd > FAKEDEV_MAX)) {
+        return NULL;
+    }
+    return FAKE_DEVICES[fd];
+}
+
+static int set_fake_device(int fd, struct fakedev_t* dev) {
+    if (unlikely(fd < 0 || fd > FAKEDEV_MAX || dev == NULL)) {
+        close(fd);
+        return -EINVAL;
+    }
+    FAKE_DEVICES[fd] = dev;
+    return fd;
+}
+
+static void delete_fake_device(int fd) {
+    if (unlikely(fd < 0 || fd > FAKEDEV_MAX)) {
+        return;
+    }
+    free(FAKE_DEVICES[fd]);
+    FAKE_DEVICES[fd] = NULL;
+}
+// END: TODO
 
 int open(const char* path, int flags) {
     if (unlikely(real_open == NULL)) {
@@ -37,21 +66,16 @@ int open(const char* path, int flags) {
 
     struct sockaddr_un un;
     const int fd = socket(AF_LOCAL, SOCK_STREAM, 0);
-    if (fd < 0) {
-        printf("fakedev: socket(%s) failed: %s\n", path, strerror(errno));
-        return -EINVAL;
-    }
-
-    if (unlikely(fd < 0 || fd > FAKEDEV_MAX)) {
-        close(fd);
+    if (unlikely(fd < 0)) {
+        errlogf("socket(%s) failed: %s", path, strerror(errno));
         return -EINVAL;
     }
 
     un.sun_family = AF_LOCAL;
     strncpy(un.sun_path, path, sizeof(un.sun_path));
 
-    if (connect(fd, (struct sockaddr *)&un, sizeof(un)) < 0) {
-        printf("fakedev: connect(%d, %s) failed: %s\n", fd, path, strerror(errno));
+    if (unlikely(connect(fd, (struct sockaddr *)&un, sizeof(un)) < 0)) {
+        errlogf("connect(%d, %s) failed: %s", fd, path, strerror(errno));
         close(fd);
         return -EINVAL;
     }
@@ -60,14 +84,13 @@ int open(const char* path, int flags) {
     struct fakedev_t* dev = malloc(sizeof(struct fakedev_t));
     ssize_t len = read(fd, dev, sizeof(struct fakedev_t));
     if (unlikely(len != sizeof(struct fakedev_t))) {
-        printf("fakedev: read(%d, %s) failed to read fakedev_t: %s\n", fd, path, strerror(errno));
+        errlogf("read(%d, %s) failed to read fakedev_t: %s", fd, path, strerror(errno));
         close(fd);
         free(dev);
-        return -ENOENT;
+        return -EINVAL;
     }
-    FAKE_DEVICES[fd] = dev;
 
-    return fd;
+    return set_fake_device(fd, dev);
 }
 
 int close(const int fd) {
@@ -75,28 +98,18 @@ int close(const int fd) {
         real_close = dlsym(RTLD_NEXT, "close");
     }
 
-    if (unlikely(fd < 0 || fd > FAKEDEV_MAX)) {
-        return real_close(fd);
-    }
-
-    struct fakedev_t* dev = FAKE_DEVICES[fd];
-    if (likely(dev == NULL)) {
-        return real_close(fd);
-    }
-    FAKE_DEVICES[fd] = NULL;
-    free(dev);
-
+    delete_fake_device(fd);
     return real_close(fd);
 }
 
 #define IOCTL_UNIMPL(REQUEST) \
     case REQUEST: \
-        printf("ioctl(%d, " #REQUEST ", %p) unhandled\n", fd, payload); \
+        errlogf("ioctl(%d, " #REQUEST ", %p) unhandled", fd, payload); \
         return -EINVAL;
 
 #define IOCTL_0_UNIMPL(REQUEST) \
     case REQUEST(0): \
-        printf("ioctl(%d, " #REQUEST "(%d), %p) unhandled\n", fd, size, payload); \
+        errlogf("ioctl(%d, " #REQUEST "(%d), %p) unhandled", fd, size, payload); \
         return -EINVAL;
 
 #define EVIOC_MASK_SIZE(nr)	((nr) & ~(_IOC_SIZEMASK << _IOC_SIZESHIFT))
@@ -105,12 +118,8 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
     if (unlikely(real_ioctl == NULL)) {
         real_ioctl = dlsym(RTLD_NEXT, "ioctl");
     }
-
-    if (unlikely(fd < 0 || fd > FAKEDEV_MAX)) {
-        return real_ioctl(fd, request, payload);
-    }
     
-    struct fakedev_t *dev = FAKE_DEVICES[fd];
+    struct fakedev_t *dev = get_fake_device(fd);
     if (likely(dev == NULL)) {
         return real_ioctl(fd, request, payload);
     }
@@ -126,9 +135,9 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
 
         case EVIOCGRAB:
             if (payload) {
-                printf("grabbing %d\n", fd);
+                errlogf("grabbing %d", fd);
             } else {
-                printf("releasing %d\n", fd);
+                errlogf("releasing %d", fd);
             }
             return 0;
 
@@ -164,7 +173,7 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
         IOCTL_0_UNIMPL(EVIOCGUNIQ)
 
         case EVIOC_MASK_SIZE(EVIOCSFF):
-            printf("ioctl(%d, EVIOCSFF(%d), %p) unhandled\n", fd, size, payload);
+            errlogf("ioctl(%d, EVIOCSFF(%d), %p) unhandled", fd, size, payload);
             return -EINVAL;
     }
 
@@ -208,10 +217,9 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
     }
 
     if (_IOC_DIR(request) == _IOC_WRITE) {
-        printf("ioctl(%d, IOC_WRITE(%d), %p) unhandled\n", fd, size, payload);
         if ((_IOC_NR(request) & ~ABS_MAX) == _IOC_NR(EVIOCSABS(0))) {
             const int type = _IOC_NR(request) & ABS_MAX;
-            printf("ioctl(%d, IOC_READ(%d)->EVIOCSABS(%d), %p) unhandled\n", fd, size, type, payload);
+            errlogf("ioctl(%d, IOC_READ(%d)->EVIOCSABS(%d), %p) unhandled", fd, size, type, payload);
         }
 
         return -EINVAL;
