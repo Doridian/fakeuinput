@@ -333,5 +333,6 @@ void libevdev_uinput_destroy(struct libevdev_uinput* uinput_dev) {
 }
 
 int libevdev_event_code_from_name(unsigned int type, const char *name) {
+    // TODO: Possibly implement this, Sunshine only uses it for UTF-8 input which is basically never used
     return -1;
 }
