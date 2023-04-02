@@ -6,7 +6,7 @@
 
 #include <pthread.h>
 
-void fakedevmgr_client_close(struct libevdev_client* client) {
+void fakedevmgr_client_close(struct fakedevmgr_client* client) {
     if (!client) {
         return;
     }
@@ -18,7 +18,7 @@ void fakedevmgr_client_close(struct libevdev_client* client) {
     }
 }
 
-void fakedevmgr_client_close_wait(struct libevdev_client* client) {
+void fakedevmgr_client_close_wait(struct fakedevmgr_client* client) {
     fakedevmgr_client_close(client);
     const pthread_t ptid_poll = client->ptid_poll;
     if (ptid_poll) {
@@ -27,7 +27,7 @@ void fakedevmgr_client_close_wait(struct libevdev_client* client) {
     }
 }
 
-int fakedevmgr_cleanup_client_if_gone(struct libevdev_client* client) {
+int fakedevmgr_cleanup_client_if_gone(struct fakedevmgr_client* client) {
     if (!client) {
         return 0;
     }
@@ -41,7 +41,7 @@ int fakedevmgr_cleanup_client_if_gone(struct libevdev_client* client) {
 }
 
 void* fakedevmgr_client_thread(void* arg) {
-    struct libevdev_client* client = (struct libevdev_client*)arg;
+    struct fakedevmgr_client* client = (struct fakedevmgr_client*)arg;
     struct input_event ie;
 
     while (1) {

@@ -9,7 +9,7 @@ struct libevdev { // Config
 };
 
 struct fakedevmgr_client_list_item {
-    struct libevdev_client* client;
+    struct fakedevmgr_client* client;
     struct fakedevmgr_client_list_item* next;
     struct fakedevmgr_client_list_item* prev;
 };
@@ -27,7 +27,7 @@ struct libevdev_uinput { // Server
     struct fakedev_t fakedev;
 };
 
-struct libevdev_client { // Client
+struct fakedevmgr_client { // Client
     int sockfd;
 
     pthread_t ptid_poll;

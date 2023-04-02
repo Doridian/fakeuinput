@@ -21,10 +21,10 @@ void fakedevmgr_server_close(struct libevdev_uinput* evdev) {
     }
 }
 
-void fakedevmgr_server_broadcast(const struct libevdev_uinput* evdev, struct input_event* ie, struct libevdev_client* except) {
+void fakedevmgr_server_broadcast(const struct libevdev_uinput* evdev, struct input_event* ie, struct fakedevmgr_client* except) {
     struct fakedevmgr_client_list_item* next = evdev->first_client_item;
     while (next) {
-        struct libevdev_client* client = next->client;
+        struct fakedevmgr_client* client = next->client;
         next = next->next;
         if (!client || client == except || !client->sockfd) {
             continue;
@@ -104,7 +104,7 @@ static void* fakedevmgr_server_thread(void* arg) {
             continue;
         }
 
-        struct libevdev_client* client = malloc(sizeof(struct libevdev_client));
+        struct fakedevmgr_client* client = malloc(sizeof(struct fakedevmgr_client));
         client->sockfd = clientfd;
         client->evdev = evdev;
 
