@@ -161,6 +161,10 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
             strncpy(payload, dev->name, size);
             break;
 
+        case EVIOCGUNIQ(0):
+            strncpy(payload, dev->uniq, size);
+            break;
+
         case EVIOCGPROP(0):
             memcpy(payload, dev->propbit, MIN(BITS_TO_LONGS(INPUT_PROP_CNT), size));
             break;
@@ -170,7 +174,6 @@ int ioctl(const int fd, const unsigned long request, void *payload) {
         IOCTL_0_UNIMPL(EVIOCGLED)
         IOCTL_0_UNIMPL(EVIOCGSW)
         IOCTL_0_UNIMPL(EVIOCGPHYS)
-        IOCTL_0_UNIMPL(EVIOCGUNIQ)
 
         case EVIOC_MASK_SIZE(EVIOCSFF):
             errlogf("ioctl(%d, EVIOCSFF(%d), %p) unhandled", fd, size, payload);
