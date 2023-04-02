@@ -10,9 +10,6 @@ bash -c "cd fakedevmgr && exec gcc -g -Wall -Werror -fPIC -shared -I/usr/include
 #/tmp/fakedevmgr /tmp/fakedev/js1 &
 #sleep 1
 
-rm -f /tmp/sunshine
-cp /usr/bin/sunshine /tmp/sunshine
-
 sudo -E LD_PRELOAD=/tmp/fakedevmgr.so /usr/bin/sunshine
 
 #LD_PRELOAD=/tmp/fakedev.so evtest /tmp/fakedev/js1
