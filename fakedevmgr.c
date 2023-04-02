@@ -4,10 +4,8 @@
 
 #include <pthread.h>
 
-#define lo() FILE* logfd = fopen("/tmp/fakedevmgr.log", "a");
-#define lc() fclose(logfd);
-#define errlog(str) { lo(); fprintf(logfd, "fakedevmgr: " str "\n"); lc(); }
-#define errlogf(str, ...) { lo(); fprintf(logfd, "fakedevmgr: " str "\n", __VA_ARGS__); lc(); }
+#define errlog(str) { fprintf(stderr, "fakedevmgr: " str "\n"); fflush(stderr); }
+#define errlogf(str, ...) { fprintf(stderr, "fakedevmgr: " str "\n", __VA_ARGS__); fflush(stderr); }
 
 #define MAX_CLIENT_FDS 256
 
@@ -16,7 +14,9 @@ struct libevdev {
 };
 
 struct libevdev_uinput {
+    int active;
     int sockfd;
+
     int local_clientfd;
 
     pthread_t ptid_accept;
@@ -28,18 +28,46 @@ struct libevdev_uinput {
 };
 
 struct libevdev_client {
+    int active;
     int sockfd;
+
     int index;
     pthread_t ptid_poll;
     struct libevdev_uinput* evdev;
 };
 
+static int set_socket_timeouts(int sockfd) {
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 1000;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout) < 0) {
+        errlogf("setsockopt(SO_SNDTIMEO) failed: %s", strerror(errno));
+        close(sockfd);
+        return -1;
+    }
+
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout) < 0) {
+        errlogf("setsockopt(SO_RCVTIMEO) failed: %s", strerror(errno));
+        close(sockfd);
+        return -1;
+    }
+
+    return 0;
+}
+
 static void client_close(struct libevdev_client* client) {
+    if (!client) {
+        return;
+    }
+
+    client->active = 0;
+
     const int sockfd = client->sockfd;
     if (sockfd) {
-        errlogf("close(client %d)", sockfd);
-        close(sockfd);
         client->sockfd = 0;
+        close(sockfd);
     }
 }
 
@@ -48,9 +76,11 @@ static int cleanup_client_if_gone(struct libevdev_uinput* evdev, int index) {
     if (!client) {
         return 0;
     }
+
     if (client->sockfd) {
         return 1;
     }
+
     if (client->ptid_poll) {
         pthread_join(client->ptid_poll, NULL);
     }
@@ -59,23 +89,30 @@ static int cleanup_client_if_gone(struct libevdev_uinput* evdev, int index) {
     return 0;
 }
 
-void shutdown_devhandler(struct libevdev_uinput* evdev) {
-    if (evdev->sockfd) {
-        close(evdev->sockfd);
-        unlink(evdev->devnode);
+static void shutdown_devhandler(struct libevdev_uinput* evdev) {
+    evdev->active = 0;
+
+    const int sockfd = evdev->sockfd;
+    if (sockfd) {
         evdev->sockfd = 0;
-        return;
-    }
-    if (evdev->ptid_accept) {
-        pthread_join(evdev->ptid_accept, NULL);
-        evdev->ptid_accept = 0;
+        close(sockfd);
+        unlink(evdev->devnode);
     }
     for (int i = 0; i < MAX_CLIENT_FDS; i++) {
-        struct libevdev_client* client = evdev->clients[i];
-        if (client) {
-            client_close(client);
-            cleanup_client_if_gone(evdev, i);
-        }
+        client_close(evdev->clients[i]);
+    }
+    for (int i = 0; i < MAX_CLIENT_FDS; i++) {
+        cleanup_client_if_gone(evdev, i);
+    }
+}
+
+static void server_close(struct libevdev_uinput* evdev) {
+    shutdown_devhandler(evdev);
+
+    const pthread_t ptid_accept = evdev->ptid_accept;
+    if (ptid_accept) {
+        evdev->ptid_accept = 0;
+        pthread_join(ptid_accept, NULL);
     }
 }
 
@@ -95,12 +132,13 @@ void* devhandler_client(void* arg) {
     struct libevdev_client* client = (struct libevdev_client*)arg;
     struct input_event ie;
 
-    while (client->sockfd) {
+    while (client->active) {
         if (read(client->sockfd, &ie, sizeof(struct input_event)) != sizeof(struct input_event)) {
-            errlogf("read(client %d) failed: %s", client->sockfd, strerror(errno));
-            if (errno != EINVAL) {
-                client_close(client);
+            if (errno == EAGAIN) {
+                continue;
             }
+            errlogf("read(client %d) failed: %s", client->sockfd, strerror(errno));
+            client_close(client);
             break;
         }
         devhandler_broadcast(client->evdev, &ie, client);
@@ -117,10 +155,13 @@ void* devhandler_accept(void* arg) {
     struct sockaddr_un client_addr;
     unsigned int client_addr_len;
 
-    while (evdev->sockfd) {
+    while (evdev->active) {
         client_addr_len = sizeof(client_addr);
         int clientfd = accept(evdev->sockfd, (struct sockaddr*)&client_addr, &client_addr_len);
         if (clientfd < 0) {
+            if (errno == EAGAIN) {
+                continue;
+            }
             errlogf("accept() failed: %s", strerror(errno));
             continue;
         }
@@ -131,32 +172,30 @@ void* devhandler_accept(void* arg) {
                 continue;
             }
 
-            struct timeval timeout;
-            timeout.tv_sec = 0;
-            timeout.tv_usec = 1000;
-            if (setsockopt(clientfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout) < 0) {
-                errlogf("setsockopt(SO_SNDTIMEO) failed: %s", strerror(errno));
-                close(clientfd);
+            if (set_socket_timeouts(clientfd)) {
+                foundindex = -2;
                 break;
             }
 
             if (write(clientfd, &evdev->fakedev, sizeof(struct fakedev_t)) != sizeof(struct fakedev_t)) {
                 errlogf("write(welcome) failed: %s", strerror(errno));
                 close(clientfd);
+                foundindex = -2;
                 break;
             }
 
             struct libevdev_client* client = malloc(sizeof(struct libevdev_client));
+            client->active = 1;
             client->sockfd = clientfd;
             client->index = i;
             client->evdev = evdev;
             evdev->clients[i] = client;
-            pthread_create(&client->ptid_poll, NULL, (void*)devhandler_client, evdev);
+            pthread_create(&client->ptid_poll, NULL, (void*)devhandler_client, client);
             foundindex = i;
             break;
         }
 
-        if (foundindex < 0) {
+        if (foundindex == -1) {
             errlog("Too many clients");
             close(clientfd);
             continue;
@@ -169,7 +208,6 @@ void* devhandler_accept(void* arg) {
 }
 
 int init_devhandler(struct libevdev_uinput* evdev) {
-    shutdown_devhandler(evdev);
     unlink(evdev->devnode);
 
     int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -192,6 +230,10 @@ int init_devhandler(struct libevdev_uinput* evdev) {
     if (listen(sockfd, 1) < 0) {
         errlogf("listen() failed: %s", strerror(errno));
         close(sockfd);
+        return -1;
+    }
+
+    if (set_socket_timeouts(sockfd)) {
         return -1;
     }
 
@@ -276,6 +318,7 @@ int libevdev_uinput_create_from_device(const struct libevdev* dev, int uinput_fd
     errlogf("libevdev_uinput_create_from_device(): using %s", uinput_dev_tmp->devnode);
 
     memcpy(&uinput_dev_tmp->fakedev, &dev->fakedev, sizeof(struct fakedev_t));
+    uinput_dev_tmp->active = 1;
 
     if (init_devhandler(uinput_dev_tmp) < 0) {
         free(uinput_dev_tmp);
@@ -327,8 +370,7 @@ int libevdev_uinput_write_event(const struct libevdev_uinput* uinput_dev, unsign
 }
 
 void libevdev_uinput_destroy(struct libevdev_uinput* uinput_dev) {
-    shutdown_devhandler(uinput_dev);
-    close(uinput_dev->local_clientfd);
+    server_close(uinput_dev);
     free(uinput_dev);
 }
 
