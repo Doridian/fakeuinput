@@ -1,7 +1,6 @@
-#include "base.h"
+#include "../shared/base.h"
 
 #include <fcntl.h>
-
 #include <pthread.h>
 
 #define errlog(str) { fprintf(stderr, "fakedevmgr: " str "\n"); fflush(stderr); }
